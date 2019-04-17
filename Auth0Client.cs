@@ -39,20 +39,14 @@ namespace SampleWeb
 
         public async Task<LoginResult> LoginAsync(string loginHint = null)
         {
+            var result = new LoginResult { IsSuccessful = false, Tokens = null };
             var window = _windowFactory.Invoke();
+            var semaphore = new SemaphoreSlim(0, 1);
             try
             {
                 var grid = new Grid();
-
                 window.Content = grid;
                 var browser = new WebBrowser();
-
-                var signal = new SemaphoreSlim(0, 1);
-                var result = new LoginResult { IsSuccessful = false, Tokens = null };
-                window.Closed += (o, e) =>
-                {
-                    signal.Release();
-                };
                 browser.LoadCompleted += (sender, args) =>
                 {
                     var query = HttpUtility.ParseQueryString(args.Uri.Query);
@@ -64,25 +58,47 @@ namespace SampleWeb
                         {
                             var tokens = SimpleJson.DeserializeObject<Tokens>(response.Content);
                             result = new LoginResult { IsSuccessful = true, Tokens = tokens };
-                            signal.Release();
                         }
+                        semaphore.Release();
                     }
                 };
 
                 grid.Children.Add(browser);
                 window.Show();
-
                 _codeVerifier = GetRandomString();
                 browser.Navigate(GetLoginUrl(_codeVerifier, loginHint));
 
-                await signal.WaitAsync();
-
+                // Wait here until browser loads and semaphone.Release() is called
+                await semaphore.WaitAsync();
                 return result;
             }
             finally
             {
                 window.Close();
+                EnsureSemaphoreReleased(semaphore);
             }
+        }
+
+        public async Task<bool> LogoutAsync()
+        {
+            var result = false;
+            var browser = new WebBrowser();
+            var semaphore = new SemaphoreSlim(0, 1);
+            try
+            {
+                browser.Navigated += (sender, args) =>
+                {
+                    result = true;
+                    semaphore.Release();
+                };
+                browser.Navigate(GetLogoutUrl());
+                await semaphore.WaitAsync();
+            }
+            finally
+            {
+                EnsureSemaphoreReleased(semaphore);
+            }
+            return result;
         }
 
         public void Logout()
@@ -135,6 +151,7 @@ namespace SampleWeb
                   _domain);
             return logoutUrl;
         }
+        
         private static byte[] HashString(string input)
         {
             using (var hasher = SHA256.Create())
@@ -150,6 +167,7 @@ namespace SampleWeb
             rand.GetBytes(randomBytes);
             return ByteArrayToString(randomBytes);
         }
+        
         private static string ByteArrayToString(byte[] ba)
         {
             StringBuilder hex = new StringBuilder(ba.Length * 2);
@@ -160,12 +178,19 @@ namespace SampleWeb
 
             return hex.ToString();
         }
-
+        
+        private static void EnsureSemaphoreReleased(SemaphoreSlim semaphore)
+        {
+            if (semaphore.CurrentCount == 0)
+            {
+                semaphore.Release();
+            }
+        }
+        
         private string Base64URLEncode(byte[] bytes)
         {
             return Convert.ToBase64String(bytes).Replace('+', '-').Replace('/', '_').Replace("=", "");
         }
-
     }
 
     public class LoginResult
