@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -10,13 +8,13 @@ using System.Windows;
 using System.Windows.Controls;
 using RestSharp;
 
-namespace SampleWeb
+namespace YourNamespace
 {
-    /* Code copied from https://github.com/auth0/auth0-oidc-client-net
-    *  That Nuget package needed about fifty .NET Core dependencies,
-    *  which would have badly affected startup time, 
-    *  so just copied necessary methods here.
-    */
+   /* Code copied from https://github.com/auth0/auth0-oidc-client-net
+   *  That Nuget package needed about fifty .NET Core dependencies,
+   *  which would have badly affected startup time, 
+   *  so just copied necessary methods here.
+   */
     public class Auth0Client
     {
 
@@ -24,14 +22,15 @@ namespace SampleWeb
         private readonly string _clientId;
         private readonly string _domain;
         private string _codeVerifier;
-            
-        public Auth0Client(string clientId, string domain)
+
+        public Auth0Client(string domain, string clientId)
         {
-            _clientId = clientId;
             _domain = domain;
-            _windowFactory = () => new Window {
+            _clientId = clientId;
+            _windowFactory = () => new Window
+            {
                 Name = "LoginWindow",
-                Title = "Your title here",
+                Title = "Your Title Here",
                 Width = 768,
                 Height = 800
             };
@@ -39,9 +38,22 @@ namespace SampleWeb
 
         public async Task<LoginResult> LoginAsync(string loginHint = null)
         {
+            if (!IsNetworkAvailable())
+            {
+                return new LoginResult { IsSuccessful = false, Tokens = null, ErrorMessage = "You must have an internet connection." };
+            }
             var result = new LoginResult { IsSuccessful = false, Tokens = null };
             var window = _windowFactory.Invoke();
             var semaphore = new SemaphoreSlim(0, 1);
+            var closedByUser = true;
+            window.Closed += (object sender, EventArgs e) =>
+            {
+                if (closedByUser && !result.IsSuccessful)
+                {
+                    result.ErrorMessage = "You must login to continue.";
+                }
+                EnsureSemaphoreReleased(semaphore);
+            };
             try
             {
                 var grid = new Grid();
@@ -68,12 +80,17 @@ namespace SampleWeb
                 _codeVerifier = GetRandomString();
                 browser.Navigate(GetLoginUrl(_codeVerifier, loginHint));
 
-                // Wait here until browser loads and semaphone.Release() is called
+                // Wait here until browser loads and on the 2nd loading time (with the code) semaphone.Release() will be called
                 await semaphore.WaitAsync();
                 return result;
             }
+            catch (Exception ex)
+            {
+                return new LoginResult { IsSuccessful = false, Tokens = null, ErrorMessage = ex.Message };
+            }
             finally
             {
+                closedByUser = false;
                 window.Close();
                 EnsureSemaphoreReleased(semaphore);
             }
@@ -105,6 +122,25 @@ namespace SampleWeb
         {
             var browser = new WebBrowser();
             browser.Navigate(GetLogoutUrl());
+        }
+
+        public bool RevokeRefreshToken(string refreshToken)
+        {
+            var request = new RestRequest(Method.POST);
+            request.Resource = "oauth/revoke";
+            request.AddParameter("token", refreshToken);
+            request.AddParameter("client_id", _clientId);
+            var client = new RestClient(String.Format("https://{0}", _domain));
+            var response = client.Execute(request);
+            return response.IsSuccessful;
+        }
+
+        private bool IsNetworkAvailable()
+        {
+            var request = new RestRequest(Method.HEAD);
+            var client = new RestClient("https://www.google.com");
+            var response = client.Execute(request);
+            return response.StatusCode != 0;
         }
 
         private IRestResponse MakeTokenRequest(string code)
@@ -151,7 +187,6 @@ namespace SampleWeb
                   _domain);
             return logoutUrl;
         }
-        
         private static byte[] HashString(string input)
         {
             using (var hasher = SHA256.Create())
@@ -167,7 +202,6 @@ namespace SampleWeb
             rand.GetBytes(randomBytes);
             return ByteArrayToString(randomBytes);
         }
-        
         private static string ByteArrayToString(byte[] ba)
         {
             StringBuilder hex = new StringBuilder(ba.Length * 2);
@@ -178,7 +212,7 @@ namespace SampleWeb
 
             return hex.ToString();
         }
-        
+
         private static void EnsureSemaphoreReleased(SemaphoreSlim semaphore)
         {
             if (semaphore.CurrentCount == 0)
@@ -186,16 +220,18 @@ namespace SampleWeb
                 semaphore.Release();
             }
         }
-        
+
         private string Base64URLEncode(byte[] bytes)
         {
             return Convert.ToBase64String(bytes).Replace('+', '-').Replace('/', '_').Replace("=", "");
         }
+
     }
 
     public class LoginResult
     {
         public bool IsSuccessful;
+        public string ErrorMessage;
         public Tokens Tokens;
     }
 
